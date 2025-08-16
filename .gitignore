@@ -9,3 +9,4 @@ logs/
 test.py
 archive
 faiss_index/
+data/
