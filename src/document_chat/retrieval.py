@@ -27,8 +27,6 @@ class ConversationalRAG:
         try:
             self.log = CustomLogger().get_logger(__name__)
             self.session_id = session_id
-
-            # Load LLM and prompts once
             self.llm = self._load_llm()
             self.contextualize_prompt: ChatPromptTemplate = PROMPT_REGISTRY[
                 PromptType.CONTEXTUALIZE_QUESTION.value
@@ -36,19 +34,14 @@ class ConversationalRAG:
             self.qa_prompt: ChatPromptTemplate = PROMPT_REGISTRY[
                 PromptType.CONTEXT_QA.value
             ]
-
-            # Lazy pieces
             self.retriever = retriever
             self.chain = None
             if self.retriever is not None:
                 self._build_lcel_chain()
-
             self.log.info("ConversationalRAG initialized", session_id=self.session_id)
         except Exception as e:
             self.log.error("Failed to initialize ConversationalRAG", error=str(e))
             raise DocumentPortalException("Initialization error in ConversationalRAG", sys)
-
-    # ---------- Public API ----------
 
     def load_retriever_from_faiss(
         self,

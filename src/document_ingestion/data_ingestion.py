@@ -13,7 +13,7 @@ from langchain_community.vectorstores import FAISS
 from utils.model_loader import ModelLoader
 from logger.custom_logger import CustomLogger
 from exception.custom_exception import DocumentPortalException
-from utils.file_io import _session_id, save_uploaded_files
+from utils.file_io import generate_session_id, save_uploaded_files
 from utils.document_ops import load_documents
 
 SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".txt"}
@@ -70,18 +70,17 @@ class FaissManager:
         """
         if self.vs is None:
             raise RuntimeError("Call load_or_create() before add_documents_idempotent().")
-        
         new_docs: List[Document] = []
-        
         for d in docs:
             key = self._fingerprint(d.page_content, d.metadata or {})
             if key in self._meta["rows"]:
                 continue
             self._meta["rows"][key] = True
             new_docs.append(d)
-            
         if new_docs:
-            self.vs.add_documents(new_docs)
+            # This will add new documents to the FAISS index, which first Embeds the chunks and then adds it to the index.
+            # Add / Append new documents over the same existing index
+            self.vs.add_documents(new_docs) 
             self.vs.save_local(str(self.index_dir))
             self._save_meta()
         return len(new_docs)
@@ -100,8 +99,8 @@ class FaissManager:
         if not texts:
             raise DocumentPortalException("No existing FAISS index and no data to create one", sys)
         
-        self.vs = FAISS.from_texts(texts=texts, embedding=self.emb, metadatas=metadatas or [])
-        self.vs.save_local(str(self.index_dir))
+        self.vs = FAISS.from_texts(texts=texts, embedding=self.emb, metadatas=metadatas or [])  # create new index
+        self.vs.save_local(str(self.index_dir))  # save the new index
         return self.vs
 
 class ChatIngestor:
@@ -125,7 +124,7 @@ class ChatIngestor:
             self.model_loader = ModelLoader()
             
             self.use_session = use_session_dirs
-            self.session_id = session_id or _session_id()
+            self.session_id = session_id or generate_session_id()
             
             self.temp_base = Path(temp_base)
             self.temp_base.mkdir(parents=True, exist_ok=True)
