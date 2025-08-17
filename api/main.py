@@ -173,7 +173,7 @@ async def chat_query(
 
 # uvcorn is ASGI server for running FastAPI applications that supports async features which helps in handling multiple requests efficiently
 # To run the FastAPI app, use the command below in your terminal:
-# uvicorn api.main:app --host 0.0.0.0 --port 8080 --reload
+# uvicorn api.main:app --port 8080 --reload
 
 # GUnicorn is a WSGI server for running Python web applications,that supports multiple workers for handling concurrent requests.
 # Gunicorn is typically used in production environments for better performance and reliability. and Flask is a WSGI application framework for Python.
