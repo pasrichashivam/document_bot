@@ -1,0 +1,256 @@
+# This is cloud formation template to create the required AWS resources for the Document Bot application
+# It includes VPC, subnets, security groups, ECS cluster, ECR repository, and task definitions
+# The infrastructure is designed to run the Document Bot application on AWS Fargate with necessary networking
+
+# yaml-language-server: $schema=https://raw.githubusercontent.com/awslabs/goformation/master/schema/cloudformation.schema.json
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Full ECS + ECR + VPC Infra for Document Portal with secrets and logging
+
+# VPC and Subnet configurations
+# This section defines the VPC and subnets that will be used for the ECS cluster
+Parameters:
+  VpcCIDR:
+    Type: String
+    Default: 10.0.0.0/16
+
+  Subnet1CIDR:
+    Type: String
+    Default: 10.0.1.0/24
+
+  Subnet2CIDR:
+    Type: String
+    Default: 10.0.2.0/24
+
+  ImageUrl:
+    Type: String
+    Description: ECR Image URI to use for container
+
+Resources:
+
+  # ECR Repository to store the Docker image
+  # This repository will be used to push the Docker image built from the Document Bot application
+  MyECRRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: documentportal
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      ImageTagMutability: MUTABLE
+
+  ### VPC, Subnets, Internet Gateway
+  # VPC and Subnet resources
+  # These resources create a VPC with two public subnets, an internet gateway, and route tables
+  # The VPC is configured to allow public access for the ECS tasks
+  MyVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCIDR 
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: ecs-vpc
+  # Subnets for the VPC
+  # Two public subnets are created in different availability zones to ensure high availability
+  Subnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref MyVPC 
+      CidrBlock: !Ref Subnet1CIDR
+      AvailabilityZone: !Select [0, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: public-subnet-1
+
+  Subnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref MyVPC
+      CidrBlock: !Ref Subnet2CIDR
+      AvailabilityZone: !Select [1, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: public-subnet-2
+  # Internet Gateway and Route Table
+  # An internet gateway is created to allow outbound internet access for the ECS tasks
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+  # Attach the internet gateway to the VPC
+  # This allows the VPC to route traffic to and from the internet
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref MyVPC
+      InternetGatewayId: !Ref InternetGateway
+  # Route Table and Routes
+  # A route table is created to manage the routing of traffic within the VPC
+  # The route table is associated with the public subnets to allow internet access
+  # The route table includes a route to the internet gateway for outbound traffic
+  RouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref MyVPC
+  # Public Route
+  # This route allows traffic to flow from the subnets to the internet through the internet gateway
+  # This is necessary for the ECS tasks to access external resources
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref RouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+  # Subnet Route Table Associations
+  # These associations link the subnets to the route table, allowing them to use the routes
+  # This is necessary for the ECS tasks running in these subnets to access the internet
+  # The associations ensure that the subnets can route traffic through the internet gateway
+  RouteAssoc1:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref Subnet1
+      RouteTableId: !Ref RouteTable
+  # Second Subnet Route Table Association
+  # This association links the second subnet to the same route table, allowing it to use the same routes
+  # This ensures that both subnets can access the internet and communicate with each other
+  RouteAssoc2:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref Subnet2
+      RouteTableId: !Ref RouteTable
+
+  ### ECS Cluster
+  # ECS Cluster and Task Definition
+  # This section defines the ECS cluster and the task definition for the Document Bot application
+  # ECS Cluster
+  # The ECS cluster is where the Document Bot service will run
+  ECSCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: document-portal-cluster
+
+  ### ECS Execution Role with Secrets + Logs
+  # ECS Execution Role
+  # This role allows ECS tasks to pull images from ECR and write logs to CloudWatch
+  # The role is necessary for the ECS tasks to run with the required permissions
+  ECSExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: ecsTaskExecutionRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: ecs-secrets-logs-access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - logs:CreateLogGroup
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource: "*"
+
+  ### Security Group
+  # ECS Security Group
+  # This security group allows inbound traffic to the ECS tasks on port 8080
+  # The security group is necessary to control access to the ECS tasks
+  # It allows traffic from any IP address on port 8080, which is the port used by the Document Bot application
+  # This is necessary for the ECS tasks to be accessible from the internet or other AWS services
+  ECSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow HTTP access to container
+      VpcId: !Ref MyVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 8080
+          ToPort: 8080
+          CidrIp: 0.0.0.0/0
+
+  ### ECS Task Definition
+  # ECS Task Definition
+  # This task definition specifies how the Document Bot container should run in ECS
+  # It includes the container image, CPU and memory requirements, port mappings, and logging configuration
+  # The task definition is necessary for ECS to know how to run the Document Bot application
+  # it defines the resources required for the task, such as CPU and memory, and how to log the output
+  # The task definition is used by ECS to launch the container with the specified configuration
+  ECSTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: documentportaltd
+      Cpu: "1024"
+      Memory: "8192"
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      ExecutionRoleArn: !GetAtt ECSExecutionRole.Arn
+      ContainerDefinitions:
+        - Name: document-portal-container
+          Image: !Ref ImageUrl
+          Essential: true
+          PortMappings:
+            - ContainerPort: 8080
+          Environment:
+            - Name: LANGCHAIN_PROJECT
+              Value: DOCUMENT PORTAL
+          Secrets:
+            - Name: GROQ_API_KEY
+              ValueFrom: arn:aws:secretsmanager:us-east-1:685057748560:secret:GROQ_API_KEY
+            - Name: HF_TOKEN
+              ValueFrom: arn:aws:secretsmanager:us-east-1:685057748560:secret:HF_TOKEN
+            - Name: GOOGLE_API_KEY
+              ValueFrom: arn:aws:secretsmanager:us-east-1:685057748560:secret:GOOGLE_API_KEY
+            - Name: LANGCHAIN_API_KEY
+              ValueFrom: arn:aws:secretsmanager:us-east-1:685057748560:secret:LANGCHAIN_API_KEY
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: /ecs/documentportal
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: ecs
+
+  ### ECS Service
+  # ECS Service
+  # This service runs the Document Bot task in the ECS cluster
+  # It ensures that the specified number of tasks are running and manages the lifecycle of the tasks
+  # The service is necessary to keep the Document Bot application running and accessible
+  # It defines the desired count of tasks, the cluster where the service runs, and the task definition to use
+  # The service is responsible for maintaining the desired state of the application, ensuring that the specified number of tasks are always running
+  # The service also handles scaling and load balancing of the tasks
+  ECSService:
+    Type: AWS::ECS::Service
+    DependsOn: AttachGateway
+    Properties:
+      ServiceName: document-portal-service
+      Cluster: !Ref ECSCluster
+      LaunchType: FARGATE
+      DesiredCount: 1
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          Subnets:
+            - !Ref Subnet1
+            - !Ref Subnet2
+          SecurityGroups:
+            - !Ref ECSSecurityGroup
+      TaskDefinition: !Ref ECSTaskDefinition
+# Outputs
+# This section defines the outputs of the CloudFormation stack
+# These outputs can be used to reference the created resources in other stacks or for informational purposes
+Outputs:
+  ECSClusterName:
+    Value: !Ref ECSCluster
+
+  TaskDefinitionArn:
+    Value: !Ref ECSTaskDefinition

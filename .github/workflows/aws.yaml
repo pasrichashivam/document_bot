@@ -1,0 +1,138 @@
+# GitHub Actions workflow to deploy a Docker container to Amazon ECS Fargate
+# This workflow builds a Docker image, pushes it to Amazon ECR, and deploys it
+name: CI/CD to ECS Fargate
+
+# On defines when the workflow should run
+# In this case, it runs on pushes to the main branch
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# environment variables used throughout the workflow, we can also define this in secrets and variables in GitHub
+env:
+  # AWS region where the resources will be deployed
+  AWS_REGION: us-east-1
+  # Amazon ECR repository name where the Docker image will be pushed
+  # This repository should already exist in ECR
+  ECR_REPOSITORY: documentbot
+  # ECS service and cluster names where the Docker container will be deployed
+  # These should already exist in your ECS setup
+  ECS_SERVICE: document-bot-service
+  # ECS cluster name where the service is running
+  # This cluster should already exist in your ECS setup
+  ECS_CLUSTER: document-bot-cluster
+  # Path to the ECS task definition file
+  # This file defines how the Docker container should run in ECS
+  ECS_TASK_DEFINITION: .github/workflows/task-definition.json 
+  # The name of the container in the task definition
+  CONTAINER_NAME: document-bot-container
+
+# Permissions required for the workflow
+# This allows the workflow to write an ID token and read repository contents
+permissions:
+  # This permission is required for the workflow to authenticate with AWS
+  id-token: write
+  contents: read
+
+# Define the jobs that will run in this workflow
+# deploy: This job handles the deployment process
+# Steps: These are the individual steps that will be executed in the job
+# Step 1: Checkout the repository to get the code and Dockerfile
+# Step 2: Configure AWS credentials using the secrets stored in GitHub
+# Step 3: Optionally deploy an ECR stack if needed
+# Step 4: Login to Amazon ECR to authenticate for pushing the Docker image
+# Step 5: Build the Docker image, tag it with the commit SHA, and push it to ECR
+# Step 6: Render the ECS task definition with the new image ID
+# Step 7: Deploy the updated task definition to the ECS service
+# Step 8: Print a success message after deployment
+# This workflow uses the AWS CLI and GitHub Actions to automate the deployment process
+jobs:
+  # -------------------------------
+  # 1. Build & Push Docker Image (Continous Deployment)
+  # -------------------------------
+  build-and-push:
+    name: Build & Push Docker Image
+    runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.build-image.outputs.image }}
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        # This step configures AWS credentials using the secrets stored in GitHub
+        # It uses the aws-actions/configure-aws-credentials action to set up the AWS credentials
+        # The AWS_ACCESS_KEY and AWS_SECRET_ACCESS_KEY should be stored as secrets in the GitHub repository
+        # These secrets should be created in the repository settings under Secrets and variables > Actions
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+      # Login to ECR
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v1
+
+      - name: Build and Push Docker Image
+        id: build-image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        # This step deploys the ECR stack using a CloudFormation template
+        # It uses the aws-actions/aws-cloudformation-github-deploy action to deploy the stack
+        # The template file is specified as .github/workflows/template.yml
+        # The stack name is set to ecr-repo-stack, and the region is set to the AWS region defined in the environment variable
+        run: |
+          IMAGE_URI=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          echo "IMAGE_URI=$IMAGE_URI" >> $GITHUB_ENV
+          docker build -t $IMAGE_URI .
+          docker push $IMAGE_URI
+          echo "image=$IMAGE_URI" >> $GITHUB_OUTPUT
+
+  # -------------------------------
+  # 2. Deploy to ECS (Continous Delivery)
+  # -------------------------------
+  deploy:
+    name: Deploy to ECS Fargate
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+      # Render the ECS task definition with the new image ID
+      # This step updates the ECS task definition with the new Docker image URI
+      # it uses the aws-actions/amazon-ecs-render-task-definition action to modify the task definition
+      # The task definition file is specified as the ECS_TASK_DEFINITION environment variable
+      # image is set to the newly built Docker image URI which is output from the previous step
+
+      - name: Render Task Definition
+        id: render-task
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: ${{ env.ECS_TASK_DEFINITION }}
+          container-name: ${{ env.CONTAINER_NAME }}
+          image: ${{ needs.build-and-push.outputs.image }}
+      # Deploy the updated task definition to the ECS service
+      # This step deploys the updated task definition to the ECS service using the aws-actions/amazon-ecs-deploy-task-definition action
+      # It uses the task definition rendered in the previous step and deploys it to the specified ECS service and cluster
+      # The wait-for-service-stability option ensures that the deployment waits until the service is stable
+      - name: Deploy to ECS
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v1
+        with:
+          task-definition: ${{ steps.render-task.outputs.task-definition }}
+          service: ${{ env.ECS_SERVICE }}
+          cluster: ${{ env.ECS_CLUSTER }}
+          wait-for-service-stability: true
+
+      - name: Done!
+        run: echo "Deployed to ECS Fargate Successfully"
