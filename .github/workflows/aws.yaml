@@ -25,7 +25,7 @@ env:
   ECS_CLUSTER: document-bot-cluster
   # Path to the ECS task definition file
   # This file defines how the Docker container should run in ECS
-  ECS_TASK_DEFINITION: .github/workflows/task-definition.json 
+  ECS_TASK_DEFINITION: .github/workflows/task_definition.json 
   # The name of the container in the task definition
   CONTAINER_NAME: document-bot-container
 
@@ -114,7 +114,6 @@ jobs:
       # it uses the aws-actions/amazon-ecs-render-task-definition action to modify the task definition
       # The task definition file is specified as the ECS_TASK_DEFINITION environment variable
       # image is set to the newly built Docker image URI which is output from the previous step
-
       - name: Render Task Definition
         id: render-task
         uses: aws-actions/amazon-ecs-render-task-definition@v1
